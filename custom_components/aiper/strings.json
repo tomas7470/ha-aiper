@@ -46,6 +46,9 @@
         },
         "select": {
             "region": {"name": "Region"}
+        },
+        "camera": {
+            "map": {"name": "Map"}
         }
     }
 }
