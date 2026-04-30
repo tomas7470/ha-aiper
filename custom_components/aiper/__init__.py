@@ -68,8 +68,8 @@ async def _async_run_now(hass: HomeAssistant, call: ServiceCall) -> None:
     # If both set, prefer depth (matches the Aiper app's behaviour).
     use_depth = depth > 0
 
-    # IrriSense 2.0 is map-based; pick the first available map. WR doesn't
-    # need a map (we send 0 if there isn't one).
+    # IrriSense 2.0 is map-based; we need (mapId, regionId) from the device.
+    # WR is single-zone, both 0 is fine.
     map_id = 0
     try:
         maps: Any = await coordinator.client.get_map_list(serial)
@@ -77,6 +77,21 @@ async def _async_run_now(hass: HomeAssistant, call: ServiceCall) -> None:
             map_id = int(maps[0].get("id") or 0)
     except AiperError as exc:
         _LOGGER.debug("get_map_list failed for %s: %s", serial, exc)
+
+    # When user left region_id=0 and the device has a map, auto-pick the
+    # first region — region_id=0 is not a real id and the server rejects it.
+    if region_id == 0 and map_id != 0:
+        try:
+            regions = await coordinator.client.get_map_regions(serial)
+            if regions:
+                first = regions[0]
+                region_id = int(first.get("id") or 0)
+                _LOGGER.info(
+                    "aiper.run_now: auto-picked region %r (id=%s) for %s",
+                    first.get("name"), region_id, serial,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("region auto-pick failed for %s: %s", serial, exc)
 
     start_ts = int(time.time()) + 10
     _LOGGER.info(

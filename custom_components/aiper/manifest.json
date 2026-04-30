@@ -1,7 +1,7 @@
 {
     "domain": "aiper",
     "name": "Aiper IrriSense",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "config_flow": true,
     "documentation": "https://github.com/tomas7470/ha-aiper",
     "issue_tracker": "https://github.com/tomas7470/ha-aiper/issues",

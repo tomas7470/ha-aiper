@@ -6,7 +6,8 @@ run_now:
 
         IrriSense 2.0 is depth-based: pick how many millimetres of water to
         deliver (the device computes the runtime from your nozzle's flow
-        rate). Common app presets are 3 mm, 6 mm, and 12 mm.
+        rate). The Aiper app's quick-run presets are 3, 6, and 13 mm but
+        the API accepts any value — pick whatever you want.
 
         For the older IrriSense WR (or for time-based control), set
         `duration` to a non-zero value and leave `depth` at 0.
@@ -22,8 +23,8 @@ run_now:
             name: Watering amount (mm)
             description: >
                 Millimetres of water to deliver. Leave 0 if using duration
-                instead. The Aiper app's quick-run buttons translate to
-                3 / 6 / 12 mm.
+                instead. Common values: 3 / 6 / 13 mm (the app presets) but
+                any value works.
             required: false
             default: 6
             example: 6
@@ -49,12 +50,14 @@ run_now:
         region_id:
             name: Region (zone) id
             description: >
-                For map-based devices, the region id within the saved map.
-                Leave at 0 for the default region.
+                For map-based devices (IrriSense 2.0), the region id within
+                the saved map. Leave at 0 to auto-pick the first region.
+                Multi-zone setups: pick the specific id from your map
+                (e.g. Area_1 = 1, Area_2 = 2 in the order they were drawn).
             required: false
             default: 0
             selector:
                 number:
                     min: 0
-                    max: 1000000000000000000
+                    max: 1000
                     mode: box

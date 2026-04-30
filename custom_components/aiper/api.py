@@ -249,6 +249,35 @@ class AiperClient:
     async def get_map_list(self, serial: str) -> Any:
         return await self._post("/wr/getMapList", {"sn": serial})
 
+    async def get_map_doc(self, serial: str) -> dict[str, Any] | None:
+        """Fetch the first map's full JSON (regions + geometry).
+
+        getMapList returns presigned S3 URLs (1-hour TTL); we follow the
+        first one and parse the body. Returns None if the device has no
+        saved map.
+        """
+        maps = await self.get_map_list(serial)
+        if not (isinstance(maps, list) and maps and isinstance(maps[0], dict)):
+            return None
+        url = maps[0].get("mapUrl")
+        if not url:
+            return None
+        async with self._session.get(url) as resp:
+            resp.raise_for_status()
+            return await resp.json(content_type=None)
+
+    async def get_map_regions(self, serial: str) -> list[dict[str, Any]]:
+        """Return the list of regions (zones) defined on the device's map.
+
+        Each region has at least `id` (int) and `name` (str). Empty list if
+        the device has no map.
+        """
+        doc = await self.get_map_doc(serial)
+        if not isinstance(doc, dict):
+            return []
+        regions = doc.get("regions")
+        return regions if isinstance(regions, list) else []
+
     async def add_watering_task(
         self,
         serial: str,
