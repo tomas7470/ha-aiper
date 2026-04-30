@@ -24,6 +24,8 @@ PLATFORMS: list[Platform] = [
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
+    Platform.NUMBER,
+    Platform.SELECT,
 ]
 
 SERVICE_RUN_NOW = "run_now"
@@ -56,16 +58,21 @@ def _resolve_serial(hass: HomeAssistant, device_id: str) -> tuple[str, AiperCoor
     raise vol.Invalid(f"No active Aiper coordinator for device {device_id}")
 
 
-async def _async_run_now(hass: HomeAssistant, call: ServiceCall) -> None:
-    """Service handler: aiper.run_now — create a one-shot watering task."""
-    serial, coordinator = _resolve_serial(hass, call.data["device_id"])
-    depth: float = float(call.data["depth"])
-    duration: int = int(call.data["duration"])
-    region_id: int = int(call.data["region_id"])
+async def async_trigger_run(
+    coordinator: AiperCoordinator,
+    serial: str,
+    *,
+    depth: float = 0.0,
+    duration: int = 0,
+    region_id: int = 0,
+) -> None:
+    """Shared implementation: schedule a one-shot watering task ~10s from now.
 
+    Used by both the `aiper.run_now` service and the per-device button entity.
+    Caller must ensure exactly one of `depth`/`duration` is positive.
+    """
     if depth <= 0 and duration <= 0:
         raise vol.Invalid("Set either depth (mm) > 0 or duration (min) > 0")
-    # If both set, prefer depth (matches the Aiper app's behaviour).
     use_depth = depth > 0
 
     # IrriSense 2.0 is map-based; we need (mapId, regionId) from the device.
@@ -112,6 +119,18 @@ async def _async_run_now(hass: HomeAssistant, call: ServiceCall) -> None:
     await coordinator.async_request_refresh()
 
 
+async def _async_service_run_now(hass: HomeAssistant, call: ServiceCall) -> None:
+    """`aiper.run_now` service handler — thin wrapper over async_trigger_run."""
+    serial, coordinator = _resolve_serial(hass, call.data["device_id"])
+    await async_trigger_run(
+        coordinator,
+        serial,
+        depth=float(call.data["depth"]),
+        duration=int(call.data["duration"]),
+        region_id=int(call.data["region_id"]),
+    )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = AiperCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
@@ -124,7 +143,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_register(
             DOMAIN,
             SERVICE_RUN_NOW,
-            lambda call: _async_run_now(hass, call),
+            lambda call: _async_service_run_now(hass, call),
             schema=RUN_NOW_SCHEMA,
         )
     return True

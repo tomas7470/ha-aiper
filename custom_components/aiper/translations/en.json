@@ -37,7 +37,15 @@
             "auto_upgrade": {"name": "Auto upgrade"}
         },
         "button": {
-            "refresh": {"name": "Refresh"}
+            "refresh": {"name": "Refresh"},
+            "run":     {"name": "Start watering"}
+        },
+        "number": {
+            "run_depth":             {"name": "Run depth"},
+            "run_duration_override": {"name": "Run duration override"}
+        },
+        "select": {
+            "region": {"name": "Region"}
         }
     }
 }

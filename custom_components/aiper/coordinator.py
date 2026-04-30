@@ -71,6 +71,35 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                     record.update(info)
             except AiperError as exc:
                 _LOGGER.debug("getEquipmentInfo failed for %s: %s", sn, exc)
+
+            # Map regions — map JSON URL TTL is 1h so we cache, refresh once per
+            # mapId change. Stored as `regions: [{id:int, name:str}, ...]` so
+            # the select platform can render names without re-fetching.
+            try:
+                old = (self.data or {}).get(sn, {}) if self.data else {}
+                if not record.get("regions") and old.get("regions"):
+                    record["regions"] = old["regions"]
+                    record["map_id"] = old.get("map_id")
+                else:
+                    map_list = await self.client.get_map_list(sn)
+                    if isinstance(map_list, list) and map_list:
+                        new_map_id = map_list[0].get("id")
+                        if new_map_id != old.get("map_id") or not old.get("regions"):
+                            regions = await self.client.get_map_regions(sn)
+                            record["regions"] = [
+                                {"id": int(r.get("id") or 0), "name": str(r.get("name") or "Region")}
+                                for r in regions
+                                if isinstance(r, dict)
+                            ]
+                            record["map_id"] = new_map_id
+                        else:
+                            record["regions"] = old["regions"]
+                            record["map_id"] = old["map_id"]
+            except AiperError as exc:
+                _LOGGER.debug("region fetch failed for %s: %s", sn, exc)
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("region fetch error for %s: %s", sn, exc)
+
             merged[sn] = record
         return merged
 
