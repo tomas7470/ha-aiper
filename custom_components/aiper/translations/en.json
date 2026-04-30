@@ -1,0 +1,43 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "data": {
+                    "email": "Email",
+                    "password": "Password",
+                    "region": "Region"
+                },
+                "data_description": {
+                    "email": "Email of your Aiper account",
+                    "password": "Password of your Aiper account",
+                    "region": "Pick `international` for the EU/US/etc. cloud, `chinese` for the cn-north-1 cloud."
+                }
+            }
+        },
+        "error": {
+            "invalid_auth": "Wrong email or password.",
+            "cannot_connect": "Couldn't reach the Aiper cloud."
+        },
+        "abort": {
+            "already_configured": "This Aiper account is already configured."
+        }
+    },
+    "entity": {
+        "sensor": {
+            "firmware_version":          {"name": "Firmware version"},
+            "mcu_firmware_version":      {"name": "MCU firmware"},
+            "valve_firmware_version":    {"name": "Valve firmware"},
+            "bluetooth_firmware_version":{"name": "Bluetooth firmware"},
+            "wifi_rssi":                 {"name": "Wi-Fi signal"},
+            "wifi_ssid":                 {"name": "Wi-Fi network"},
+            "machine_status":            {"name": "Machine status"}
+        },
+        "binary_sensor": {
+            "online":       {"name": "Online"},
+            "auto_upgrade": {"name": "Auto upgrade"}
+        },
+        "button": {
+            "refresh": {"name": "Refresh"}
+        }
+    }
+}

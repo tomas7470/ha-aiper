@@ -1,0 +1,13 @@
+{
+    "domain": "aiper",
+    "name": "Aiper IrriSense",
+    "version": "0.1.0",
+    "config_flow": true,
+    "documentation": "https://github.com/tomas7470/ha-aiper",
+    "issue_tracker": "https://github.com/tomas7470/ha-aiper/issues",
+    "codeowners": ["@tomas7470"],
+    "iot_class": "cloud_polling",
+    "integration_type": "hub",
+    "requirements": [],
+    "dependencies": []
+}
