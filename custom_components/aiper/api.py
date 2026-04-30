@@ -128,6 +128,11 @@ class AiperClient:
         code = str(decoded.get("code", ""))
         if code == "5050":
             raise AiperRegionMismatch(decoded.get("message") or "regional account does not exist")
+        # 402 = "your account is being used on another device" — Aiper rotates
+        # JWTs on every fresh login; only one session per account is valid.
+        # Treat it as auth failure so the coordinator transparently re-logins.
+        if code == "402":
+            raise AiperAuthError(decoded.get("message") or "session superseded")
         if not decoded.get("successful", code == "200"):
             raise AiperError(f"{code}: {decoded.get('message')} (path={path})")
         return decoded.get("data", decoded)

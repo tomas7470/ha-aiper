@@ -4,10 +4,14 @@ run_now:
         Trigger a one-off watering run on an IrriSense device by creating a
         scheduled task that fires in ~10 seconds. The Aiper cloud relays the
         command to the device over its existing MQTT shadow.
-    target:
-        device:
-            integration: aiper
     fields:
+        device_id:
+            name: Aiper device
+            description: The Aiper device to run.
+            required: true
+            selector:
+                device:
+                    integration: aiper
         duration:
             name: Duration (minutes)
             description: How long to run.
@@ -24,10 +28,9 @@ run_now:
             name: Region (zone) id
             description: >
                 For map-based devices (IrriSense 2.0), the region id within
-                the saved map. Leave blank for "default region" (0). Look up
-                via the /wr/getMapList payload if you have multiple zones.
+                the saved map. Leave at 0 for the default region.
             required: false
-            example: 0
+            default: 0
             selector:
                 number:
                     min: 0
@@ -36,8 +39,7 @@ run_now:
         depth_mm:
             name: Target depth (mm)
             description: >
-                Optional. Some firmwares prefer depth-based watering (auto
-                derives duration from soil moisture). Leave 0 for time-based.
+                Optional depth-based watering. Leave 0 for time-based.
             required: false
             default: 0
             selector:
