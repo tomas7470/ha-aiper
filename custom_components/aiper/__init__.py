@@ -30,9 +30,11 @@ SERVICE_RUN_NOW = "run_now"
 RUN_NOW_SCHEMA = vol.Schema(
     {
         vol.Required("device_id"): cv.string,
-        vol.Required("duration"): vol.All(vol.Coerce(int), vol.Range(min=1, max=120)),
+        # Either depth (preferred for IrriSense 2.0) or duration must be > 0;
+        # we validate that combination in the handler so the error is friendly.
+        vol.Optional("depth", default=6.0): vol.All(vol.Coerce(float), vol.Range(min=0, max=50)),
+        vol.Optional("duration", default=0): vol.All(vol.Coerce(int), vol.Range(min=0, max=120)),
         vol.Optional("region_id", default=0): vol.All(vol.Coerce(int), vol.Range(min=0)),
-        vol.Optional("depth_mm", default=0.0): vol.All(vol.Coerce(float), vol.Range(min=0)),
     }
 )
 
@@ -57,9 +59,14 @@ def _resolve_serial(hass: HomeAssistant, device_id: str) -> tuple[str, AiperCoor
 async def _async_run_now(hass: HomeAssistant, call: ServiceCall) -> None:
     """Service handler: aiper.run_now — create a one-shot watering task."""
     serial, coordinator = _resolve_serial(hass, call.data["device_id"])
-    duration: int = call.data["duration"]
-    region_id: int = call.data["region_id"]
-    depth_mm: float = call.data["depth_mm"]
+    depth: float = float(call.data["depth"])
+    duration: int = int(call.data["duration"])
+    region_id: int = int(call.data["region_id"])
+
+    if depth <= 0 and duration <= 0:
+        raise vol.Invalid("Set either depth (mm) > 0 or duration (min) > 0")
+    # If both set, prefer depth (matches the Aiper app's behaviour).
+    use_depth = depth > 0
 
     # IrriSense 2.0 is map-based; pick the first available map. WR doesn't
     # need a map (we send 0 if there isn't one).
@@ -73,16 +80,18 @@ async def _async_run_now(hass: HomeAssistant, call: ServiceCall) -> None:
 
     start_ts = int(time.time()) + 10
     _LOGGER.info(
-        "aiper.run_now: sn=%s duration=%dmin map_id=%s region_id=%s start_ts=%s",
-        serial, duration, map_id, region_id, start_ts,
+        "aiper.run_now: sn=%s %s map_id=%s region_id=%s start_ts=%s",
+        serial,
+        f"depth={depth}mm" if use_depth else f"duration={duration}min",
+        map_id, region_id, start_ts,
     )
     await coordinator.client.add_watering_task(
         serial,
-        duration_min=duration,
         first_execute_ts_sec=start_ts,
         map_id=map_id,
         region_id=region_id,
-        depth=depth_mm,
+        depth_mm=depth if use_depth else None,
+        duration_min=None if use_depth else duration,
         repeat_type=0,
     )
     await coordinator.async_request_refresh()

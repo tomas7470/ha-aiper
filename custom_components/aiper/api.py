@@ -253,34 +253,40 @@ class AiperClient:
         self,
         serial: str,
         *,
-        duration_min: int,
         first_execute_ts_sec: int,
         map_id: int,
         region_id: int = 0,
         plan_id: int = 0,
-        depth: float = 0.0,
+        depth_mm: float | None = None,
+        duration_min: int | None = None,
         enabled: int = 1,
         repeat_days: str = "",
         repeat_type: int = 0,  # 0 = run once
-        start_time: str = "00:00",  # ignored when repeat_type=0 but server still expects it
+        start_time: str = "00:00",
         work_type: int = 0,  # 0 = water (vs 1 = pesticide)
     ) -> Any:
-        """Create a watering task — used both for scheduling and for one-shot manual runs.
+        """Create a watering task — used both for scheduling and one-shot manual runs.
 
-        Param names + types come straight from the @JsonKey annotations on
-        `WrApi.addIrrisenseTask` in v3.3.0 of the Android app.
+        Param names + types come from @JsonKey annotations on
+        `WrApi.addIrrisenseTask` in v3.3.0. Both `depth` (Float) and `duration`
+        (Integer) are nullable in the schema; pass exactly one. The IrriSense
+        2.0 UI is depth-based (3/6/12 mm presets); the older WR may accept
+        either.
 
-        For a manual "run now":
+        For "run now":
             * `repeat_type=0` (one-time)
             * `first_execute_ts_sec=int(time.time()) + 10` (start in ~10s)
-            * `duration_min=N`
+            * either `depth_mm=N.N` or `duration_min=N` (not both)
         """
+        if depth_mm is None and duration_min is None:
+            raise ValueError("Pass either depth_mm or duration_min")
+        if depth_mm is not None and duration_min is not None:
+            raise ValueError("Pass depth_mm OR duration_min, not both")
+
         payload: dict[str, Any] = {
             "sn": serial,
-            "depth": depth,
-            "duration": duration_min,
             "enabled": enabled,
-            "estimatedDuration": duration_min,
+            "estimatedDuration": duration_min or 0,
             "firstExecuteUtcTimestampSecond": first_execute_ts_sec,
             "mapId": map_id,
             "planId": plan_id,
@@ -290,6 +296,10 @@ class AiperClient:
             "startTime": start_time,
             "workType": work_type,
         }
+        if depth_mm is not None:
+            payload["depth"] = depth_mm
+        if duration_min is not None:
+            payload["duration"] = duration_min
         return await self._post("/wr/addWateringTaskV2", payload)
 
     async def update_watering_task(self, serial: str, task: dict[str, Any]) -> Any:

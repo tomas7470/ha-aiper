@@ -2,8 +2,14 @@ run_now:
     name: Start watering now
     description: >
         Trigger a one-off watering run on an IrriSense device by creating a
-        scheduled task that fires in ~10 seconds. The Aiper cloud relays the
-        command to the device over its existing MQTT shadow.
+        scheduled task that fires in ~10 seconds.
+
+        IrriSense 2.0 is depth-based: pick how many millimetres of water to
+        deliver (the device computes the runtime from your nozzle's flow
+        rate). Common app presets are 3 mm, 6 mm, and 12 mm.
+
+        For the older IrriSense WR (or for time-based control), set
+        `duration` to a non-zero value and leave `depth` at 0.
     fields:
         device_id:
             name: Aiper device
@@ -12,23 +18,39 @@ run_now:
             selector:
                 device:
                     integration: aiper
-        duration:
-            name: Duration (minutes)
-            description: How long to run.
-            required: true
-            default: 10
-            example: 10
+        depth:
+            name: Watering amount (mm)
+            description: >
+                Millimetres of water to deliver. Leave 0 if using duration
+                instead. The Aiper app's quick-run buttons translate to
+                3 / 6 / 12 mm.
+            required: false
+            default: 6
+            example: 6
             selector:
                 number:
-                    min: 1
+                    min: 0
+                    max: 50
+                    step: 0.5
+                    unit_of_measurement: mm
+        duration:
+            name: Override duration (minutes)
+            description: >
+                Force a fixed runtime in minutes. Set to 0 (default) to use
+                depth-based watering. If both are set, depth wins.
+            required: false
+            default: 0
+            selector:
+                number:
+                    min: 0
                     max: 120
                     step: 1
                     unit_of_measurement: min
         region_id:
             name: Region (zone) id
             description: >
-                For map-based devices (IrriSense 2.0), the region id within
-                the saved map. Leave at 0 for the default region.
+                For map-based devices, the region id within the saved map.
+                Leave at 0 for the default region.
             required: false
             default: 0
             selector:
@@ -36,15 +58,3 @@ run_now:
                     min: 0
                     max: 1000000000000000000
                     mode: box
-        depth_mm:
-            name: Target depth (mm)
-            description: >
-                Optional depth-based watering. Leave 0 for time-based.
-            required: false
-            default: 0
-            selector:
-                number:
-                    min: 0
-                    max: 50
-                    step: 0.1
-                    unit_of_measurement: mm
