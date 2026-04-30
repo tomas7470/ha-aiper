@@ -238,29 +238,66 @@ class AiperClient:
 
     # --- IrriSense WR / 2.0 commands ---
 
-    async def list_watering_tasks(self, serial: str) -> dict[str, Any]:
+    async def list_watering_tasks(self, serial: str) -> Any:
         return await self._post("/wr/getWateringTaskListV2", {"sn": serial})
 
-    async def add_watering_task(self, serial: str, task: dict[str, Any]) -> dict[str, Any]:
-        return await self._post("/wr/addWateringTaskV2", {"sn": serial, **task})
+    async def get_map_list(self, serial: str) -> Any:
+        return await self._post("/wr/getMapList", {"sn": serial})
 
-    async def update_watering_task(self, serial: str, task: dict[str, Any]) -> dict[str, Any]:
+    async def add_watering_task(
+        self,
+        serial: str,
+        *,
+        duration_min: int,
+        first_execute_ts_sec: int,
+        map_id: int,
+        region_id: int = 0,
+        plan_id: int = 0,
+        depth: float = 0.0,
+        enabled: int = 1,
+        repeat_days: str = "",
+        repeat_type: int = 0,  # 0 = run once
+        start_time: str = "00:00",  # ignored when repeat_type=0 but server still expects it
+        work_type: int = 0,  # 0 = water (vs 1 = pesticide)
+    ) -> Any:
+        """Create a watering task — used both for scheduling and for one-shot manual runs.
+
+        Param names + types come straight from the @JsonKey annotations on
+        `WrApi.addIrrisenseTask` in v3.3.0 of the Android app.
+
+        For a manual "run now":
+            * `repeat_type=0` (one-time)
+            * `first_execute_ts_sec=int(time.time()) + 10` (start in ~10s)
+            * `duration_min=N`
+        """
+        payload: dict[str, Any] = {
+            "sn": serial,
+            "depth": depth,
+            "duration": duration_min,
+            "enabled": enabled,
+            "estimatedDuration": duration_min,
+            "firstExecuteUtcTimestampSecond": first_execute_ts_sec,
+            "mapId": map_id,
+            "planId": plan_id,
+            "regionId": region_id,
+            "repeatDays": repeat_days,
+            "repeatType": repeat_type,
+            "startTime": start_time,
+            "workType": work_type,
+        }
+        return await self._post("/wr/addWateringTaskV2", payload)
+
+    async def update_watering_task(self, serial: str, task: dict[str, Any]) -> Any:
         return await self._post("/wr/updateWateringTaskV2", {"sn": serial, **task})
 
-    async def manual_run(self, serial: str, *, duration_min: int, region_id: int | None = None) -> dict[str, Any]:
-        """Start a one-off manual watering. Endpoint shape from /wr/local_task in smali.
+    async def delete_watering_task(self, task_id: int) -> Any:
+        return await self._post("/wr/deleteWateringTaskById", {"id": task_id})
 
-        TODO(phase-0-iter): the exact field names ("duration"? "minutes"? "regionId"?)
-        will be confirmed empirically; the server's 4xx responses are descriptive.
-        """
-        payload: dict[str, Any] = {"sn": serial, "duration": duration_min}
-        if region_id is not None:
-            payload["regionId"] = region_id
-        return await self._post("/wr/local_task", payload)
-
-    async def stop_run(self, serial: str) -> dict[str, Any]:
-        # Empirical — likely a flag in /wr/local_task or a separate endpoint
-        return await self._post("/wr/local_task", {"sn": serial, "stop": True})
+    async def batch_set_tasks_enabled(self, serial: str, enabled: bool, task_ids: list[int]) -> Any:
+        return await self._post(
+            "/wr/batchUpdateWrWateringTaskEnabledV2",
+            {"sn": serial, "enabled": 1 if enabled else 0, "ids": task_ids},
+        )
 
     # --- Generic command channel (for shadow-style commands) ---
     async def transpond_to_device(self, serial: str, command: dict[str, Any]) -> dict[str, Any]:
