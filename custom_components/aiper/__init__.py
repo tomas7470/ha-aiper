@@ -102,11 +102,17 @@ async def async_trigger_run(
             _LOGGER.warning("region auto-pick failed for %s: %s", serial, exc)
 
     start_ts = int(time.time()) + 10
+    # `startTime` should be the HH:mm of the firstExecute timestamp. The
+    # server may validate it for one-shot tasks even though scheduling is by
+    # absolute timestamp — the smali shows it's a non-null required field.
+    start_local = time.localtime(start_ts)
+    start_time_str = f"{start_local.tm_hour:02d}:{start_local.tm_min:02d}"
+
     _LOGGER.info(
-        "aiper.run_now: sn=%s %s map_id=%s region_id=%s start_ts=%s",
+        "aiper.run_now: sn=%s %s map_id=%s region_id=%s start_ts=%s start_time=%s",
         serial,
         f"depth={depth}mm" if use_depth else f"duration={duration}min",
-        map_id, region_id, start_ts,
+        map_id, region_id, start_ts, start_time_str,
     )
     await coordinator.client.add_watering_task(
         serial,
@@ -115,6 +121,7 @@ async def async_trigger_run(
         region_id=region_id,
         depth_mm=depth if use_depth else None,
         duration_min=None if use_depth else duration,
+        start_time=start_time_str,
         repeat_type=0,
     )
     await coordinator.async_request_refresh()

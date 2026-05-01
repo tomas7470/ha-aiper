@@ -134,7 +134,13 @@ class AiperClient:
         if code == "402":
             raise AiperAuthError(decoded.get("message") or "session superseded")
         if not decoded.get("successful", code == "200"):
-            raise AiperError(f"{code}: {decoded.get('message')} (path={path})")
+            # Log the full response at WARNING so we can iterate on undocumented
+            # error codes by reading the HA log.
+            _LOGGER.warning(
+                "Aiper API error: path=%s code=%s message=%r full=%s",
+                path, code, decoded.get("message"), decoded,
+            )
+            raise AiperError(f"{code}: {decoded.get('message') or '(no message)'} (path={path})")
         return decoded.get("data", decoded)
 
     # ---- public surface ----
