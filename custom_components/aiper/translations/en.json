@@ -53,7 +53,8 @@
             "map": {"name": "Map"}
         },
         "switch": {
-            "watering": {"name": "Watering"}
+            "watering": {"name": "Watering"},
+            "mqtt_capture": {"name": "MQTT debug capture"}
         }
     }
 }

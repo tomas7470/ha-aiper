@@ -234,10 +234,12 @@ class AiperMqttClient:
         on_message: MessageHandler,
         *,
         ssl_context: ssl.SSLContext,
+        on_publish: Callable[[str, Any], Awaitable[None]] | None = None,
         keepalive: int = 60,
     ) -> None:
         self._api = api_client
         self._on_message = on_message
+        self._on_publish = on_publish
         self._ssl_context = ssl_context
         self._keepalive = keepalive
         self._ws: websockets.WebSocketClientProtocol | None = None
@@ -298,6 +300,23 @@ class AiperMqttClient:
             data = payload
         async with self._lock:
             await self._ws.send(_build_publish(topic, data))
+        # Notify capture sink (if any). We pass the parsed JSON form when
+        # possible so the JSONL stays human-readable.
+        if self._on_publish is not None:
+            try:
+                pretty: Any
+                if isinstance(payload, dict):
+                    pretty = payload
+                elif isinstance(payload, (bytes, bytearray)):
+                    try:
+                        pretty = json.loads(payload)
+                    except Exception:  # noqa: BLE001
+                        pretty = payload.decode("utf-8", errors="replace")
+                else:
+                    pretty = payload
+                await self._on_publish(topic, pretty)
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("on_publish capture failed", exc_info=True)
 
     async def publish_shadow_desired(self, serial: str, desired: dict[str, Any]) -> None:
         await self.publish(

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import ssl
+import time
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -55,6 +58,15 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         # blocking-call complaints from HA's loop guard.
         self._ssl_context: ssl.SSLContext | None = None
         self.mqtt: AiperMqttClient | None = None
+
+        # MQTT debug capture — when enabled, every received MQTT message and
+        # every published payload is written as JSON-Lines to /config so the
+        # user / a future analysis script can replay & inspect the schema. The
+        # toggle lives on a switch entity so users can enable when they're
+        # about to do something interesting in the Aiper app.
+        self.capture_enabled: bool = False
+        self._capture_path: Path = Path(hass.config.path("aiper_mqtt_capture.jsonl"))
+        self._capture_max_bytes: int = 5 * 1024 * 1024  # 5 MB rolling cap
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         try:
@@ -134,6 +146,9 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                 self.client,
                 on_message=self._on_mqtt_message,
                 ssl_context=self._ssl_context,
+                on_publish=lambda topic, payload: self.async_capture_publish(
+                    "SEND", topic, payload
+                ),
             )
         await self.mqtt.start()
         for sn in self.data:
@@ -160,6 +175,15 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
 
     async def _on_mqtt_message(self, topic: str, payload: Any) -> None:
         """Merge a shadow / device-report message into coordinator.data."""
+        # Capture to file first (sync small write off the event loop is fine
+        # for a few KB once in a while; HA's loop guard tolerates this size).
+        if self.capture_enabled:
+            try:
+                await self.hass.async_add_executor_job(
+                    self._capture_write, "RECV", topic, payload
+                )
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("capture write failed: %s", exc)
         if not isinstance(payload, dict):
             return
         sn = self._serial_from_topic(topic)
@@ -217,3 +241,47 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         if i + 1 < len(parts):
             return parts[i + 1] or None
         return None
+
+    # ---- capture helpers ----
+    def _capture_write(self, direction: str, topic: str, payload: Any) -> None:
+        """Append one JSON-Lines record to the capture file. Roll over at cap."""
+        try:
+            if self._capture_path.exists() and self._capture_path.stat().st_size > self._capture_max_bytes:
+                # Trim: keep the last 50% of the file.
+                data = self._capture_path.read_bytes()
+                cut = len(data) // 2
+                # Cut at next newline so we don't break a record.
+                nl = data.find(b"\n", cut)
+                if nl != -1:
+                    data = data[nl + 1 :]
+                self._capture_path.write_bytes(data)
+            with self._capture_path.open("a") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "ts": time.time(),
+                            "dir": direction,  # RECV or SEND
+                            "topic": topic,
+                            "payload": payload,
+                        },
+                        default=str,
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except Exception:  # noqa: BLE001
+            # Never crash the coordinator on capture errors.
+            _LOGGER.debug("capture log write failed", exc_info=True)
+
+    async def async_capture_publish(
+        self, direction: str, topic: str, payload: Any
+    ) -> None:
+        """Record a publish event in the capture file (call from publish helpers)."""
+        if not self.capture_enabled:
+            return
+        try:
+            await self.hass.async_add_executor_job(
+                self._capture_write, direction, topic, payload
+            )
+        except Exception:  # noqa: BLE001
+            pass

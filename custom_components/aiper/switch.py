@@ -18,6 +18,7 @@ import logging
 
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -31,6 +32,10 @@ WATERING = SwitchEntityDescription(
     key="watering",
     translation_key="watering",
 )
+MQTT_CAPTURE = SwitchEntityDescription(
+    key="mqtt_capture",
+    translation_key="mqtt_capture",
+)
 
 
 async def async_setup_entry(
@@ -39,7 +44,14 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: AiperCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(AiperWateringSwitch(coordinator, sn) for sn in coordinator.data)
+    entities: list[SwitchEntity] = []
+    for sn in coordinator.data:
+        entities.append(AiperWateringSwitch(coordinator, sn))
+    # One capture switch per integration (uses first device for grouping).
+    if coordinator.data:
+        first_sn = next(iter(coordinator.data))
+        entities.append(AiperMqttCaptureSwitch(coordinator, first_sn))
+    async_add_entities(entities)
 
 
 class AiperWateringSwitch(AiperEntity, SwitchEntity):
@@ -140,4 +152,46 @@ class AiperWateringSwitch(AiperEntity, SwitchEntity):
             {"WrControl": {"cmd": 0}},
         )
         self._optimistic_state = False
+        self.async_write_ha_state()
+
+
+class AiperMqttCaptureSwitch(AiperEntity, SwitchEntity):
+    """Toggle MQTT debug capture: writes every received + sent MQTT message
+    to /config/aiper_mqtt_capture.jsonl (rolling 5 MB).
+
+    Use this when you want to learn what the Aiper app actually publishes
+    when you tap "Quick Run" or "Stop": enable, do the action in the app,
+    disable, then we read the file to extract the exact topic + payload.
+    """
+
+    entity_description = MQTT_CAPTURE
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: AiperCoordinator, serial: str) -> None:
+        super().__init__(coordinator, serial)
+        self._attr_unique_id = f"aiper_{coordinator.entry.entry_id}_mqtt_capture"
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.capture_enabled
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        return {
+            "capture_path": str(self.coordinator._capture_path),  # noqa: SLF001
+            "max_bytes": self.coordinator._capture_max_bytes,  # noqa: SLF001
+        }
+
+    async def async_turn_on(self, **kwargs: object) -> None:
+        self.coordinator.capture_enabled = True
+        _LOGGER.info(
+            "Aiper MQTT capture ENABLED → %s",
+            self.coordinator._capture_path,  # noqa: SLF001
+        )
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: object) -> None:
+        self.coordinator.capture_enabled = False
+        _LOGGER.info("Aiper MQTT capture DISABLED")
         self.async_write_ha_state()
