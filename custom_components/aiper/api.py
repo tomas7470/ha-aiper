@@ -140,6 +140,14 @@ class AiperClient:
                 "Aiper API error: path=%s code=%s message=%r full=%s",
                 path, code, decoded.get("message"), decoded,
             )
+            # 6002 = device-state gate: cloud refuses to honour control ops
+            # because the device is in standby / water-shortage / fault. The
+            # server returns an empty `message` so we synthesize a useful one.
+            if code == "6002":
+                raise AiperError(
+                    "6002 — device is paused (likely water shortage or in fault state). "
+                    "Open the Aiper app, resolve the alert, then retry."
+                )
             raise AiperError(f"{code}: {decoded.get('message') or '(no message)'} (path={path})")
         return decoded.get("data", decoded)
 
