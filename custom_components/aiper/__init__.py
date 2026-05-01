@@ -96,7 +96,8 @@ async def async_trigger_run(
     # the app's CmdManager sends (smali: editIrrisenseTaskTDevice — keys are
     # snake_case `water_depth`, `point_time`, `start_time`, `weekdays`,
     # `repeat_type`). We send a one-shot (repeat_type=0) starting now+10s.
-    if coordinator.mqtt.is_connected:
+    mqtt = coordinator.mqtt
+    if mqtt is not None and mqtt.is_connected:
         start_ts = int(time.time()) + 10
         start_local = time.localtime(start_ts)
         hh_mm = f"{start_local.tm_hour:02d}:{start_local.tm_min:02d}"
@@ -117,7 +118,7 @@ async def async_trigger_run(
             desired["Watering"]["point_time"] = duration
             desired["Watering"]["water_depth"] = 0.0
         _LOGGER.info("run_now via MQTT shadow: sn=%s %s", serial, desired)
-        await coordinator.mqtt.publish_shadow_desired(serial, desired)
+        await mqtt.publish_shadow_desired(serial, desired)
         # Coordinator will pick up the device's response on the shadow
         # update/accepted topic; nothing else to do.
         return

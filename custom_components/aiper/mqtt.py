@@ -34,6 +34,7 @@ import hashlib
 import hmac
 import json
 import logging
+import ssl
 import struct
 import urllib.parse
 from collections.abc import Awaitable, Callable
@@ -232,10 +233,12 @@ class AiperMqttClient:
         api_client: AiperClient,
         on_message: MessageHandler,
         *,
+        ssl_context: ssl.SSLContext,
         keepalive: int = 60,
     ) -> None:
         self._api = api_client
         self._on_message = on_message
+        self._ssl_context = ssl_context
         self._keepalive = keepalive
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._task: asyncio.Task[None] | None = None
@@ -343,6 +346,9 @@ class AiperMqttClient:
         )
         # WebSocket-level ping_interval=None: AWS doesn't reply to WS pings.
         # We send MQTT PINGREQ at the protocol level instead.
+        # ssl context is pre-built (off-loop) by the caller — passing it
+        # explicitly avoids websockets/python triggering blocking
+        # load_default_certs / set_default_verify_paths inside the event loop.
         async with websockets.connect(
             ws_url,
             subprotocols=["mqtt"],  # type: ignore[list-item]
@@ -350,6 +356,7 @@ class AiperMqttClient:
             ping_interval=None,
             ping_timeout=None,
             open_timeout=20,
+            ssl=self._ssl_context,
         ) as ws:
             self._ws = ws
             await ws.send(_build_connect(client_id, self._keepalive))

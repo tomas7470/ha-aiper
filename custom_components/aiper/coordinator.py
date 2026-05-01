@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import ssl
 from datetime import timedelta
 from typing import Any
 
@@ -50,7 +51,10 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             api_base=entry.data.get(CONF_API_BASE),
             token=entry.data.get(CONF_TOKEN),
         )
-        self.mqtt = AiperMqttClient(self.client, on_message=self._on_mqtt_message)
+        # ssl context is built off-loop by async_start_mqtt to avoid
+        # blocking-call complaints from HA's loop guard.
+        self._ssl_context: ssl.SSLContext | None = None
+        self.mqtt: AiperMqttClient | None = None
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         try:
@@ -119,6 +123,18 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
     # ---- MQTT lifecycle + dispatch ----
     async def async_start_mqtt(self) -> None:
         """Start the MQTT client and subscribe to every device's topics."""
+        if self._ssl_context is None:
+            # Building an SSL context loads the OS trust store and reads
+            # certificate files synchronously — must run in an executor.
+            self._ssl_context = await self.hass.async_add_executor_job(
+                ssl.create_default_context
+            )
+        if self.mqtt is None:
+            self.mqtt = AiperMqttClient(
+                self.client,
+                on_message=self._on_mqtt_message,
+                ssl_context=self._ssl_context,
+            )
         await self.mqtt.start()
         for sn in self.data:
             for topic in (
@@ -139,7 +155,8 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                 _LOGGER.debug("shadow GET %s failed: %s", sn, exc)
 
     async def async_stop_mqtt(self) -> None:
-        await self.mqtt.stop()
+        if self.mqtt is not None:
+            await self.mqtt.stop()
 
     async def _on_mqtt_message(self, topic: str, payload: Any) -> None:
         """Merge a shadow / device-report message into coordinator.data."""
