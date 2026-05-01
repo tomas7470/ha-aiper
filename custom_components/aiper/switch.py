@@ -130,16 +130,14 @@ class AiperWateringSwitch(AiperEntity, SwitchEntity):
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: object) -> None:
-        # Stop = MQTT shadow `desired.Watering = {"command": "stop"}`. The
-        # exact firmware-required field is TBD (need a captured Stop press
-        # from the app). If MQTT isn't connected we have no path — REST has
-        # no /wr/stop endpoint.
+        """Stop = `WrControl{cmd: 0}` shadow desired (smali:
+        ManualOperateViewModel.resetControl)."""
         mqtt = self.coordinator.mqtt
         if mqtt is None or not mqtt.is_connected:
             raise RuntimeError("Stop requires MQTT shadow (cloud_push); MQTT not connected")
         await mqtt.publish_shadow_desired(
             self._serial,
-            {"Watering": {"command": "stop"}},
+            {"WrControl": {"cmd": 0}},
         )
         self._optimistic_state = False
         self.async_write_ha_state()

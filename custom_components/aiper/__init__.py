@@ -92,36 +92,48 @@ async def async_trigger_run(
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("region auto-pick failed for %s: %s", serial, exc)
 
-    # Path 1 (preferred): MQTT shadow-desired. The IrriSense 2.0 firmware
-    # listens for a `Watering` desired-state block. Field names mirror what
-    # the app's CmdManager sends (smali: editIrrisenseTaskTDevice — keys are
-    # snake_case `water_depth`, `point_time`, `start_time`, `weekdays`,
-    # `repeat_type`). We send a one-shot (repeat_type=0) starting now+10s.
+    # Path 1 (preferred): MQTT shadow-desired with the exact schema the app
+    # uses. Reverse-engineered from smali:
+    #   ManualOperateViewModel.startMode →
+    #     cmdManager.send("WrControl", {"cmd": 1})
+    #   IrrisenseTaskSourceMemory.editIrrisenseTaskTDevice →
+    #     cmdManager.send("WrPlanConfig",
+    #         {"work_ctrl": {water_depth, point_time},
+    #          "time_ctrl": {start_time, weekdays, repeat_type},
+    #          "map_id", "enabled": true, "type": 0})
+    # cmdManager.sendDesired wraps as {"state":{"desired":{<type>:<body>}}}
+    # and publishes to $aws/things/<sn>/shadow/update.
     mqtt = coordinator.mqtt
     if mqtt is not None and mqtt.is_connected:
         start_ts = int(time.time()) + 10
         start_local = time.localtime(start_ts)
         hh_mm = f"{start_local.tm_hour:02d}:{start_local.tm_min:02d}"
-        desired: dict[str, Any] = {
-            "Watering": {
-                "command": "start",
-                "regionId": region_id,
+        map_id = int(coordinator.data.get(serial, {}).get("map_id") or 0)
+
+        wr_plan_config_body: dict[str, Any] = {
+            "work_ctrl": {
+                "water_depth": float(depth) if use_depth else 0.0,
+                "point_time": 0 if use_depth else int(duration),
+            },
+            "time_ctrl": {
                 "start_time": hh_mm,
                 "weekdays": "",
                 "repeat_type": 0,
-                "trigger_ts": start_ts,
-            }
+            },
+            "map_id": map_id,
+            "region_id": region_id,
+            "enabled": True,
+            "type": 0,
         }
-        if use_depth:
-            desired["Watering"]["water_depth"] = depth
-            desired["Watering"]["point_time"] = 0
-        else:
-            desired["Watering"]["point_time"] = duration
-            desired["Watering"]["water_depth"] = 0.0
-        _LOGGER.info("run_now via MQTT shadow: sn=%s %s", serial, desired)
-        await mqtt.publish_shadow_desired(serial, desired)
-        # Coordinator will pick up the device's response on the shadow
-        # update/accepted topic; nothing else to do.
+        _LOGGER.info(
+            "run_now via MQTT (WrPlanConfig + WrControl{cmd=1}): sn=%s map_id=%s region_id=%s %s",
+            serial, map_id, region_id,
+            f"depth={depth}mm" if use_depth else f"duration={duration}min",
+        )
+        # Send the schedule first so the device knows what to run, then
+        # the manual-start trigger.
+        await mqtt.publish_shadow_desired(serial, {"WrPlanConfig": wr_plan_config_body})
+        await mqtt.publish_shadow_desired(serial, {"WrControl": {"cmd": 1}})
         return
 
     # Path 2 (fallback): REST scheduled task. This is the only path the
