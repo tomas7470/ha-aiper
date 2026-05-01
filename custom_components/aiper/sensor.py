@@ -24,6 +24,28 @@ class AiperSensorDescription(SensorEntityDescription):
     value_fn: Callable[[dict[str, Any]], Any]
 
 
+# Map the device's numeric MachineStatus to a readable string.
+# 0 = standby (idle), 1 = running, 2 = paused, anything else = raw int as str.
+# Numeric → label mapping observed on IrriSense 2 firmware:
+#   0 = standby (idle)
+#   1 = running
+#   2 = paused (manual or schedule pause)
+#   6 = fault — usually water shortage / pump issue (alarm 4005); recovers
+#       to standby once the alarm clears
+_MACHINE_STATUS_LABELS = {0: "standby", 1: "running", 2: "paused", 6: "fault"}
+
+
+def _map_machine_status(v: Any) -> Any:
+    if isinstance(v, dict):
+        v = v.get("status")
+    if v is None:
+        return None
+    try:
+        return _MACHINE_STATUS_LABELS.get(int(v), str(v))
+    except (TypeError, ValueError):
+        return v
+
+
 SENSORS: tuple[AiperSensorDescription, ...] = (
     AiperSensorDescription(
         key="firmware_version",
@@ -67,9 +89,9 @@ SENSORS: tuple[AiperSensorDescription, ...] = (
     AiperSensorDescription(
         key="machine_status",
         translation_key="machine_status",
-        # Numeric op-state. Family tree sets it for offline devices; the MQTT
-        # shadow's `MachineStatus` (when present) wins for online devices.
-        value_fn=lambda d: (
+        # 0 = standby, 1 = running. Comes from realTimeProgress/setWorkMode
+        # responses on aiper/things/<sn>/upChan; falls back to family-tree value.
+        value_fn=lambda d: _map_machine_status(
             d.get("mqtt_MachineStatus")
             if "mqtt_MachineStatus" in d
             else d.get("machineStatus")

@@ -225,7 +225,47 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         if sn is None or sn not in self.data:
             return
         record = dict(self.data[sn])
-        # Shadow envelope: state.reported.{NetStat,OpInfo,AlarmReport,...}
+
+        # `aiper/things/<sn>/upChan` carries live-running state (realTimeProgress,
+        # setWorkMode response, workInfoReport, etc.) — different envelope than
+        # AWS shadow. Each message has the cmd name as the top-level key.
+        if topic.endswith("/upChan"):
+            for cmd_name, body in payload.items():
+                if not isinstance(body, dict):
+                    continue
+                # realTimeProgress / setWorkMode response → live-state fields.
+                # `status` here is 1 = running, 0 = standby; surface as MachineStatus.
+                if cmd_name in ("realTimeProgress", "setWorkMode", "workInfoReport") and "status" in body:
+                    record["mqtt_MachineStatus"] = body.get("status")
+                if cmd_name == "realTimeProgress":
+                    record["mqtt_progress"] = body.get("progress")
+                    record["mqtt_run_time_s"] = body.get("time")
+                    record["mqtt_water_yield"] = body.get("waterYield")
+                    record["mqtt_hydropenia"] = body.get("hydropenia")
+                    if isinstance(body.get("map_info"), dict):
+                        record["mqtt_active_region"] = body["map_info"].get("name")
+                if cmd_name == "AlarmReport":
+                    raw_codes = body.get("code")
+                    record["alarm_codes"] = list(raw_codes) if isinstance(raw_codes, list) else []
+                    record["alarm_timestamp"] = body.get("timestamp")
+            self.data[sn] = record
+            self.async_set_updated_data(self.data)
+            return
+
+        # `aiper/things/<sn>/WR/cloud/report` — older WR-style device reports.
+        if "/cloud/report" in topic:
+            for cmd_name, body in payload.items():
+                if not isinstance(body, dict):
+                    continue
+                if cmd_name == "AlarmReport":
+                    raw_codes = body.get("code")
+                    record["alarm_codes"] = list(raw_codes) if isinstance(raw_codes, list) else []
+                    record["alarm_timestamp"] = body.get("timestamp")
+            self.data[sn] = record
+            self.async_set_updated_data(self.data)
+            return
+
+        # Otherwise: standard AWS shadow envelope (NetStat, OpInfo, AlarmReport, ...).
         reported = (
             payload.get("state", {}).get("reported")
             if "state" in payload

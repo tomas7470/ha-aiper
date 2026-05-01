@@ -70,13 +70,18 @@ async def async_trigger_run(
 ) -> None:
     """Trigger a one-shot watering run.
 
-    Tries the MQTT shadow-desired path first (matches the app's "Quick run"
-    button); falls back to the REST scheduled-task hack only if MQTT isn't
-    connected. Caller must ensure exactly one of `depth`/`duration` > 0.
+    Tries MQTT direct-publish first (the path the v3.3.0 app actually uses
+    for Quick Run, reverse-engineered + Frida-confirmed). Falls back to the
+    REST scheduled-task hack if MQTT isn't connected.
+
+    Wire format (MQTT direct, confirmed via Frida hook on live v3.3.0 app):
+        topic   : aiper/things/<sn>/downChan
+        payload : {"setWorkMode": <body>}        # X9 format, plain JSON, NO encryption
+        body    : {"mode":0, "waterYield":<inches>, "map_id":<region.id>, "status":1}
+        QoS     : 1                              # AWSIotMqttManager.publishString QOS1
     """
     if depth <= 0 and duration <= 0:
         raise vol.Invalid("Set either depth (mm) > 0 or duration (min) > 0")
-    use_depth = depth > 0
 
     # Auto-pick first map region when the user left region_id=0 and there's a map.
     if region_id == 0:
@@ -92,69 +97,53 @@ async def async_trigger_run(
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("region auto-pick failed for %s: %s", serial, exc)
 
-    # Path 1 (preferred): MQTT shadow-desired with the EXACT app schema.
-    # Reverse-engineered from WrPanelWorkInfoViewModel.startWork$start (smali):
-    #   cmdManager.send("setWorkMode", {
-    #       "map_id":     <region_id>,    # confusingly named — actually the
-    #                                     # MappingRegion.id, not the map id!
-    #       "status":     1,              # 1 = start, 0 = stop
-    #       "mode":       0,              # 0 = water, 1 = pesticide
-    #       "waterYield": 0.1 / 0.25 / 0.5 # for non-special region types
-    #   })
-    # cmdManager.sendDesired wraps as {"state":{"desired":{"setWorkMode":<body>}}}
-    # and publishes to $aws/things/<sn>/shadow/update.
+    # ---- Path 1: MQTT direct setWorkMode (the app's Quick Run path) ----
+    # Map the user's depth-mm to the app's `waterYield` field which is in
+    # INCHES. The app's UI presets are 3/6/12 mm = 0.1/0.25/0.5 inches.
+    if depth > 0:
+        if depth <= 4:
+            water_yield = 0.1
+        elif depth <= 8:
+            water_yield = 0.25
+        else:
+            water_yield = 0.5
+    else:
+        # Duration-based fallback — pick mid preset.
+        water_yield = 0.25
+
     mqtt = coordinator.mqtt
     if mqtt is not None and mqtt.is_connected:
-        # Map depth (mm) to the firmware's preset waterYield. The app's
-        # quick-run dialog only sends 1, 2, or default. Approximate mapping:
-        #   ≤3mm → 0.25   (light)
-        #   ≤8mm → 0.5    (medium)
-        #   else → 0.1    (long / default)
-        if use_depth:
-            if depth <= 3.5:
-                yield_ = 0.25
-            elif depth <= 8:
-                yield_ = 0.5
-            else:
-                yield_ = 0.1
-        else:
-            yield_ = 0.1  # duration-based: rely on default flow rate
-
-        body: dict[str, Any] = {
-            "map_id": region_id,  # see note above — this is the region id
-            "status": 1,
+        # Field order matters for byte-for-byte parity with the app: mode, waterYield, map_id, status.
+        body = {
             "mode": 0,
-            "waterYield": yield_,
+            "waterYield": water_yield,
+            "map_id": region_id,
+            "status": 1,
         }
-        _LOGGER.info(
-            "run_now via MQTT setWorkMode: sn=%s region_id=%s waterYield=%s %s",
-            serial, region_id, yield_,
-            f"depth={depth}mm" if use_depth else f"duration={duration}min",
-        )
-        await mqtt.publish_shadow_desired(serial, {"setWorkMode": body})
-        return
+        try:
+            await mqtt.publish_aiper_cmd(serial, "setWorkMode", body)
+            # The app also subscribes to progress immediately after starting.
+            await mqtt.publish_aiper_cmd(serial, "realTimeProgress", {"cmd": 1})
+            _LOGGER.info("run_now (MQTT setWorkMode): sn=%s body=%s", serial, body)
+            await coordinator.async_request_refresh()
+            return
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("MQTT setWorkMode failed (%s); falling back to REST", exc)
 
-    # Path 2 (fallback): REST scheduled task. This is the only path the
-    # cloud allows when MQTT isn't up; it works ONLY if the device is in a
-    # healthy state (otherwise 6002).
-    map_id = 0
-    try:
-        maps: Any = await coordinator.client.get_map_list(serial)
-        if isinstance(maps, list) and maps and isinstance(maps[0], dict):
-            map_id = int(maps[0].get("id") or 0)
-    except AiperError as exc:
-        _LOGGER.debug("get_map_list failed for %s: %s", serial, exc)
-
-    start_ts = int(time.time()) + 10
+    # ---- Path 2: REST scheduled-task fallback ----
+    # Used when MQTT isn't connected. Creates a recurring-day-of-week task
+    # 70s in the future; auto-deleted after expected duration.
+    use_depth = depth > 0
+    map_id = int(coordinator.data.get(serial, {}).get("map_id") or 0)
+    start_ts = int(time.time()) + 70
     start_local = time.localtime(start_ts)
     start_time_str = f"{start_local.tm_hour:02d}:{start_local.tm_min:02d}"
     _LOGGER.info(
-        "run_now via REST (MQTT not connected): sn=%s %s map_id=%s region_id=%s",
-        serial,
+        "run_now (scheduled hack): sn=%s start=%s map_id=%s region_id=%s %s",
+        serial, start_time_str, map_id, region_id,
         f"depth={depth}mm" if use_depth else f"duration={duration}min",
-        map_id, region_id,
     )
-    await coordinator.client.add_watering_task(
+    result = await coordinator.client.add_watering_task(
         serial,
         first_execute_ts_sec=start_ts,
         map_id=map_id,
@@ -162,8 +151,52 @@ async def async_trigger_run(
         depth_mm=depth if use_depth else None,
         duration_min=None if use_depth else duration,
         start_time=start_time_str,
-        repeat_type=0,
+        repeat_type=1,
+        repeat_days="1,1,1,1,1,1,1",
     )
+    task_id: int | None = None
+    if isinstance(result, dict):
+        task_id = result.get("id")
+    elif isinstance(result, list) and result and isinstance(result[0], dict):
+        task_id = result[0].get("id")
+    if task_id is not None:
+        coordinator.hass.async_create_task(
+            _async_cleanup_run_task(coordinator, serial, int(task_id), duration_min=max(duration, 15))
+        )
+    await coordinator.async_request_refresh()
+
+
+async def _async_cleanup_run_task(
+    coordinator: AiperCoordinator,
+    serial: str,
+    task_id: int,
+    *,
+    duration_min: int,
+) -> None:
+    """Wait for the run-now scheduled task to fire and complete, then
+    delete it so it doesn't recur next week.
+
+    The task starts ~70s after creation and runs for `duration_min` minutes
+    (or whatever the device's depth-based estimate ends up being). We sleep
+    that long + a comfortable margin, then call batchDeleteWateringTaskV2
+    with the captured id."""
+    import asyncio  # noqa: PLC0415
+
+    delay = 70 + max(duration_min, 1) * 60 + 60  # start lag + run + margin
+    _LOGGER.debug("scheduling auto-delete of task %s for sn=%s in %ds", task_id, serial, delay)
+    await asyncio.sleep(delay)
+    try:
+        await coordinator.client._post(  # noqa: SLF001
+            "/wr/batchDeleteWateringTaskV2",
+            {"sn": serial, "deleteTaskIdList": [task_id]},
+        )
+        _LOGGER.info("auto-deleted run-now task %s for sn=%s", task_id, serial)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning(
+            "auto-delete of task %s for sn=%s failed: %s — please remove "
+            "it manually from the Aiper app or via the schedule list",
+            task_id, serial, exc,
+        )
     await coordinator.async_request_refresh()
 
 

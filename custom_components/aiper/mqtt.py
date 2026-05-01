@@ -29,6 +29,7 @@ the WS URL on reconnect.
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime as _dt
 import hashlib
 import hmac
@@ -106,9 +107,31 @@ def _build_subscribe(packet_id: int, topic: str, qos: int = 0) -> bytes:
     return bytes([_SUBSCRIBE]) + _enc_remaining(len(body)) + body
 
 
-def _build_publish(topic: str, payload: bytes) -> bytes:
+def _build_publish(topic: str, payload: bytes, qos: int = 0, packet_id: int = 1) -> bytes:
+    if qos == 1:
+        # PUBLISH | QoS 1 = 0x32. QoS 1 needs a 2-byte packet identifier.
+        body = _utf8(topic) + struct.pack(">H", packet_id) + payload
+        return bytes([0x32]) + _enc_remaining(len(body)) + body
     body = _utf8(topic) + payload
     return bytes([_PUBLISH]) + _enc_remaining(len(body)) + body
+
+
+# ---- Aiper command envelope (X9 format, PLAIN JSON, no encryption) ----
+# Confirmed via Frida hook on the live v3.3.0 app, captured while the user
+# tapped Start watering and the device DID start:
+#   topic   : aiper/things/<sn>/downChan
+#   payload : {"<cmdName>": <body>}            # X9 format, cmd name is the KEY
+#   QoS     : 1                                 # AWSIotMqttManager.publishString QOS1
+# isEncrypt is FALSE for all cmds via MqttDeviceManager.publish, so the JSON
+# is sent in cleartext over the (TLS-protected) MQTT-WSS connection.
+# Field order matters — Python preserves insertion order in 3.7+, so build
+# the dict with keys in the order the app uses (mode, waterYield, map_id, status).
+
+
+def aiper_envelope(cmd_name: str, body: dict[str, Any] | None = None) -> bytes:
+    """Build the wire payload the device's firmware expects for one cmd."""
+    inner = {cmd_name: body if body is not None else {}}
+    return json.dumps(inner, separators=(",", ":")).encode("utf-8")
 
 
 def _parse_publish(data: bytes) -> tuple[str, bytes]:
@@ -314,6 +337,33 @@ class AiperMqttClient:
                         pretty = payload.decode("utf-8", errors="replace")
                 else:
                     pretty = payload
+                await self._on_publish(topic, pretty)
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("on_publish capture failed", exc_info=True)
+
+    async def publish_aiper_cmd(
+        self, serial: str, cmd_name: str, body: dict[str, Any] | None = None
+    ) -> None:
+        """Publish a device-cmd to `aiper/things/<sn>/downChan` using the
+        XOR-encrypted X9 envelope the v3.3.0 app uses (QoS 1).
+
+        Encryption format reverse-engineered + Frida-confirmed against the
+        live app: `base64(xor(json({cmd_name: body}), 0x12345678)) + "\\n"`.
+        """
+        if not self.is_connected or self._ws is None:
+            raise RuntimeError("MQTT not connected")
+        topic = f"aiper/things/{serial}/downChan"
+        payload = aiper_envelope(cmd_name, body)
+        self._packet_id = (self._packet_id % 65535) + 1
+        pid = self._packet_id
+        async with self._lock:
+            await self._ws.send(_build_publish(topic, payload, qos=1, packet_id=pid))
+        _LOGGER.info("aiper cmd publish: sn=%s cmd=%s body=%s pid=%s",
+                     serial, cmd_name, body, pid)
+        # Capture-sink mirror.
+        if self._on_publish is not None:
+            try:
+                pretty = {cmd_name: body if body is not None else {}}
                 await self._on_publish(topic, pretty)
             except Exception:  # noqa: BLE001
                 _LOGGER.debug("on_publish capture failed", exc_info=True)

@@ -142,20 +142,44 @@ class AiperWateringSwitch(AiperEntity, SwitchEntity):
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: object) -> None:
-        """Stop = `setWorkMode{status:0}` shadow desired (smali:
-        WrPanelWorkInfoViewModel.stopWork$1)."""
+        """Stop the running watering.
+
+        Tries the MQTT direct setWorkMode-stop first (the path the v3.3.0
+        app uses), then falls back to deleting any active scheduled tasks
+        via REST so the device aborts whatever's running.
+        """
+        # Path 1: MQTT direct stop — matches what the app does.
         mqtt = self.coordinator.mqtt
-        if mqtt is None or not mqtt.is_connected:
-            raise RuntimeError("Stop requires MQTT shadow (cloud_push); MQTT not connected")
-        # The firmware's stopWork passes the current mode + status=0. We
-        # don't know the current `mode` for sure (water vs pesticide), but
-        # mode=0 (water) is the overwhelmingly common case.
-        await mqtt.publish_shadow_desired(
-            self._serial,
-            {"setWorkMode": {"mode": 0, "status": 0}},
-        )
+        if mqtt is not None and mqtt.is_connected:
+            try:
+                await mqtt.publish_aiper_cmd(
+                    self._serial, "setWorkMode", {"mode": 0, "status": 0}
+                )
+                _LOGGER.info("turn_off: published setWorkMode stop via MQTT")
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning("turn_off: MQTT stop publish failed: %s", exc)
+
+        # Path 2: REST cleanup — also delete any active scheduled tasks so
+        # the recurring-task fallback (if it was used to start) doesn't keep firing.
+        try:
+            tasks = await self.coordinator.client.list_watering_tasks(self._serial)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("turn_off: couldn't list tasks: %s", exc)
+            tasks = []
+        if isinstance(tasks, list) and tasks:
+            ids = [int(t["id"]) for t in tasks if isinstance(t, dict) and "id" in t]
+            if ids:
+                _LOGGER.info("turn_off: deleting %d active task(s) for sn=%s: %s", len(ids), self._serial, ids)
+                try:
+                    await self.coordinator.client._post(  # noqa: SLF001
+                        "/wr/batchDeleteWateringTaskV2",
+                        {"sn": self._serial, "deleteTaskIdList": ids},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.warning("turn_off: batch-delete failed: %s", exc)
         self._optimistic_state = False
         self.async_write_ha_state()
+        await self.coordinator.async_request_refresh()
 
 
 class AiperMqttCaptureSwitch(AiperEntity, SwitchEntity):
