@@ -86,11 +86,9 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                         new_map_id = map_list[0].get("id")
                         if new_map_id != old.get("map_id") or not old.get("regions"):
                             regions = await self.client.get_map_regions(sn)
-                            record["regions"] = [
-                                {"id": int(r.get("id") or 0), "name": str(r.get("name") or "Region")}
-                                for r in regions
-                                if isinstance(r, dict)
-                            ]
+                            # Keep the full region dicts (id, name, points, ...).
+                            # The camera platform needs the polygon geometry.
+                            record["regions"] = [r for r in regions if isinstance(r, dict)]
                             record["map_id"] = new_map_id
                         else:
                             record["regions"] = old["regions"]
