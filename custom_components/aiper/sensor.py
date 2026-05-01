@@ -46,6 +46,22 @@ def _map_machine_status(v: Any) -> Any:
         return v
 
 
+def _resolve_machine_status(d: dict[str, Any]) -> Any:
+    """Same as _map_machine_status but with an idle-fallback: if we have no
+    live MachineStatus yet but the device is reachable (MQTT online + no
+    alarms), assume `standby` — matches the app's behaviour and avoids the
+    misleading 'unknown' state most of the time.
+    """
+    raw = d.get("mqtt_MachineStatus") if "mqtt_MachineStatus" in d else d.get("machineStatus")
+    mapped = _map_machine_status(raw)
+    if mapped is not None:
+        return mapped
+    if d.get("mqtt_online") or d.get("online"):
+        codes = d.get("alarm_codes") or []
+        return "standby" if not codes else "fault"
+    return None
+
+
 SENSORS: tuple[AiperSensorDescription, ...] = (
     AiperSensorDescription(
         key="firmware_version",
@@ -91,11 +107,10 @@ SENSORS: tuple[AiperSensorDescription, ...] = (
         translation_key="machine_status",
         # 0 = standby, 1 = running. Comes from realTimeProgress/setWorkMode
         # responses on aiper/things/<sn>/upChan; falls back to family-tree value.
-        value_fn=lambda d: _map_machine_status(
-            d.get("mqtt_MachineStatus")
-            if "mqtt_MachineStatus" in d
-            else d.get("machineStatus")
-        ),
+        # If no live MachineStatus has been received yet but the device is
+        # online and has no alarms, treat that as "standby" — matches what the
+        # mobile app shows in the same situation.
+        value_fn=lambda d: _resolve_machine_status(d),
     ),
     AiperSensorDescription(
         key="alarm_codes",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import ssl
@@ -203,6 +204,25 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                 await self.mqtt.request_shadow_get(sn)
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.debug("shadow GET %s failed: %s", sn, exc)
+        # Ask each device for its current run state. The shadow only has
+        # NetStat/OpInfo/AlarmReport — runtime status (MachineStatus) lives
+        # in the realTimeProgress reply on /upChan, which the device only
+        # sends after we ask. The mobile app does the same on panel-open.
+        # Done as a deferred task so we don't block setup_entry.
+        async def _query_runtime() -> None:
+            await asyncio.sleep(3)  # let the broker finish onboarding our subs
+            mqtt = self.mqtt
+            if mqtt is None:
+                return
+            for sn in self.data:
+                for cmd in ("workInfo", "realTimeProgress"):
+                    try:
+                        await mqtt.publish_aiper_cmd(sn, cmd, {})
+                        _LOGGER.info("queried %s for sn=%s", cmd, sn)
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.warning("%s query for %s failed: %s", cmd, sn, exc)
+                    await asyncio.sleep(0.5)
+        self.hass.async_create_task(_query_runtime())
 
     async def async_stop_mqtt(self) -> None:
         if self.mqtt is not None:

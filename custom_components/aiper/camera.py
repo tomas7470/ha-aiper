@@ -69,11 +69,14 @@ class AiperMapCamera(AiperEntity, Camera):
         height: int | None = None,
     ) -> bytes | None:
         regions = self.device.get("regions") or []
-        # We don't have live sample points yet (Phase 3 = MQTT). For now we
-        # mark a region as "active" if its name matches the currently
-        # selected zone — a small UX win until shadows land.
-        active_name = self._currently_selected_region_name()
-        signature = (self.device.get("map_id"), active_name, len(regions))
+        # A region is "active" only while the device is actually running
+        # (status from realTimeProgress). Selected-but-not-running stays green.
+        ms = self.device.get("mqtt_MachineStatus")
+        if isinstance(ms, dict):
+            ms = ms.get("status")
+        is_running = ms == 1
+        active_name = self._currently_selected_region_name() if is_running else None
+        signature = (self.device.get("map_id"), active_name, len(regions), is_running)
         if signature == self._cached_signature and self._cached_png:
             return self._cached_png
 
@@ -152,7 +155,12 @@ def _render_map(
     offset_y = (CANVAS_PX - span_y * scale) / 2 - min_y * scale
 
     def project(pt: tuple[float, float]) -> tuple[float, float]:
-        return (pt[0] * scale + offset_x, pt[1] * scale + offset_y)
+        # Rotate the map 180° around the canvas centre so the user's view
+        # matches the physical garden orientation (north up). Labels stay
+        # upright because we transform points, not the rendered text.
+        x = pt[0] * scale + offset_x
+        y = pt[1] * scale + offset_y
+        return (CANVAS_PX - x, CANVAS_PX - y)
 
     try:
         font = ImageFont.load_default()
