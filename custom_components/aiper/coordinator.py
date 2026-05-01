@@ -43,10 +43,21 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{entry.entry_id}",
-            # Slower poll once MQTT is up (it carries live state); REST poll
-            # is just a safety net + for things MQTT doesn't expose.
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL * 6),
+            # Live state comes from MQTT (which uses independent AWS Cognito
+            # creds and doesn't conflict with the Aiper app's JWT session).
+            # REST polling is intentionally rare — every poll re-uses the
+            # stored JWT, and Aiper enforces a one-session-per-account rule
+            # so polling too often would cause us to wake-up & invalidate
+            # whatever session the user just established in the mobile app.
+            #
+            # We poll every 30 min just as a safety net for fields the
+            # shadow doesn't carry (firmware versions, map updates).
+            update_interval=timedelta(minutes=30),
         )
+        # Set when REST returns 402; while True we skip background polling
+        # and entities depending on REST-only fields go unavailable. User-
+        # initiated actions (button press) trigger a reauth + retry.
+        self._session_invalid: bool = False
         self.entry = entry
         self.client = AiperClient(
             session=async_get_clientsession(hass),
@@ -69,15 +80,25 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         self._capture_max_bytes: int = 5 * 1024 * 1024  # 5 MB rolling cap
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
+        # Background poll: NEVER auto-relogin here. If our JWT got kicked
+        # off (the user logged in to the app), respect that — keep MQTT
+        # running, mark REST as paused, and surface UpdateFailed so HA's
+        # UI shows the entry as "unavailable" until the user explicitly
+        # reclaims the session via the Reconnect button.
+        if self._session_invalid:
+            raise UpdateFailed(
+                "Aiper session locked by another client (likely the mobile "
+                "app). Press the Reconnect button on any IrriSense device "
+                "to reclaim it."
+            )
         try:
             devices = await self.client.list_equipment()
         except AiperAuthError as exc:
-            # Token rejected — try one re-login, then surface for reauth.
-            try:
-                await self._async_relogin()
-                devices = await self.client.list_equipment()
-            except Exception as inner:  # noqa: BLE001
-                raise UpdateFailed(f"reauth failed: {inner}") from inner
+            self._session_invalid = True
+            raise UpdateFailed(
+                f"Aiper session no longer valid: {exc}. "
+                "Press Reconnect on the device to take it back."
+            ) from exc
         except AiperError as exc:
             raise UpdateFailed(str(exc)) from exc
 
@@ -121,7 +142,10 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             merged[sn] = record
         return merged
 
-    async def _async_relogin(self) -> None:
+    async def async_relogin(self) -> None:
+        """Public so user-initiated actions can call it. Re-acquires the JWT
+        and persists it. WARNING: this will kick any other active session
+        (e.g. the mobile app) — only call when the user explicitly asks."""
         result = await self.client.login(
             self.entry.data[CONF_EMAIL], self.entry.data[CONF_PASSWORD]
         )
@@ -131,6 +155,17 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             CONF_API_BASE: result.api_base,
         }
         self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+        self._session_invalid = False
+        _LOGGER.info("Aiper REST session reclaimed (api_base=%s)", result.api_base)
+
+    async def async_user_action_with_reauth(self, fn) -> Any:
+        """Run a user-triggered REST call; on 401/402 reauth once + retry."""
+        try:
+            return await fn()
+        except AiperAuthError as exc:
+            _LOGGER.info("user action hit auth fail (%s) — reclaiming session", exc)
+            await self.async_relogin()
+            return await fn()
 
     # ---- MQTT lifecycle + dispatch ----
     async def async_start_mqtt(self) -> None:

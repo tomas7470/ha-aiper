@@ -25,6 +25,11 @@ RUN = ButtonEntityDescription(
     key="run",
     translation_key="run",
 )
+RECONNECT = ButtonEntityDescription(
+    key="reconnect",
+    translation_key="reconnect",
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
 
 
 async def async_setup_entry(
@@ -37,6 +42,7 @@ async def async_setup_entry(
     for sn in coordinator.data:
         entities.append(AiperRefreshButton(coordinator, sn))
         entities.append(AiperRunButton(coordinator, sn))
+        entities.append(AiperReconnectButton(coordinator, sn))
     async_add_entities(entities)
 
 
@@ -48,6 +54,23 @@ class AiperRefreshButton(AiperEntity, ButtonEntity):
         self._attr_unique_id = f"{serial}_refresh"
 
     async def async_press(self) -> None:
+        await self.coordinator.async_request_refresh()
+
+
+class AiperReconnectButton(AiperEntity, ButtonEntity):
+    """Press to log back in to the Aiper cloud — use after the mobile app
+    kicked HA's session off ("session locked by another client" message).
+    Will invalidate any active app session in turn (one-session-per-account
+    rule from Aiper)."""
+
+    entity_description = RECONNECT
+
+    def __init__(self, coordinator: AiperCoordinator, serial: str) -> None:
+        super().__init__(coordinator, serial)
+        self._attr_unique_id = f"{serial}_reconnect"
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_relogin()
         await self.coordinator.async_request_refresh()
 
 

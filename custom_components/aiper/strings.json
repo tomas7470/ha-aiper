@@ -39,8 +39,9 @@
             "auto_upgrade": {"name": "Auto upgrade"}
         },
         "button": {
-            "refresh": {"name": "Refresh"},
-            "run":     {"name": "Start watering"}
+            "refresh":   {"name": "Refresh"},
+            "run":       {"name": "Start watering"},
+            "reconnect": {"name": "Reconnect"}
         },
         "number": {
             "run_depth":             {"name": "Run depth"},
