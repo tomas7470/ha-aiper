@@ -51,6 +51,9 @@
         },
         "camera": {
             "map": {"name": "Map"}
+        },
+        "switch": {
+            "watering": {"name": "Watering"}
         }
     }
 }

@@ -27,6 +27,7 @@ PLATFORMS: list[Platform] = [
     Platform.NUMBER,
     Platform.SELECT,
     Platform.CAMERA,
+    Platform.SWITCH,
 ]
 
 SERVICE_RUN_NOW = "run_now"
