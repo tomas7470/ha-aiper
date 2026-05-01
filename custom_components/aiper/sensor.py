@@ -67,10 +67,19 @@ SENSORS: tuple[AiperSensorDescription, ...] = (
     AiperSensorDescription(
         key="machine_status",
         translation_key="machine_status",
-        # Numeric op-state from the device shadow / family tree (0=idle, others TBD).
-        # Only present for offline devices in the family tree; for online devices
-        # we'll surface it in Phase 2 via shadow updates.
-        value_fn=lambda d: d.get("machineStatus"),
+        # Numeric op-state. Family tree sets it for offline devices; the MQTT
+        # shadow's `MachineStatus` (when present) wins for online devices.
+        value_fn=lambda d: (
+            d.get("mqtt_MachineStatus")
+            if "mqtt_MachineStatus" in d
+            else d.get("machineStatus")
+        ),
+    ),
+    AiperSensorDescription(
+        key="alarm_codes",
+        translation_key="alarm_codes",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: ",".join(str(c) for c in d.get("alarm_codes") or []) or "none",
     ),
 )
 

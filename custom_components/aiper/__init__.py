@@ -146,6 +146,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Bring up the MQTT shadow connection once entities are ready so the first
+    # state-message refresh dispatches cleanly.
+    try:
+        await coordinator.async_start_mqtt()
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("MQTT start failed (will keep retrying): %s", exc)
+
     # Register services once per HA instance (idempotent — second call is a no-op).
     if not hass.services.has_service(DOMAIN, SERVICE_RUN_NOW):
         hass.services.async_register(
@@ -158,6 +165,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    coord: AiperCoordinator | None = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if coord is not None:
+        await coord.async_stop_mqtt()
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
     hass.data[DOMAIN].pop(entry.entry_id, None)

@@ -26,12 +26,27 @@ class AiperBinarySensorDescription(BinarySensorEntityDescription):
     value_fn: Callable[[dict[str, Any]], bool | None]
 
 
+def _online_combined(d: dict[str, Any]) -> bool | None:
+    """Prefer real-time MQTT 'mqtt_online' if present; fall back to REST 'online'."""
+    if "mqtt_online" in d:
+        return bool(d["mqtt_online"])
+    if d.get("online") is not None:
+        return bool(d["online"])
+    return None
+
+
 BINARY_SENSORS: tuple[AiperBinarySensorDescription, ...] = (
     AiperBinarySensorDescription(
         key="online",
         translation_key="online",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
-        value_fn=lambda d: bool(d.get("online")) if d.get("online") is not None else None,
+        value_fn=_online_combined,
+    ),
+    AiperBinarySensorDescription(
+        key="alarm",
+        translation_key="alarm",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        value_fn=lambda d: bool(d.get("alarm_codes")) if "alarm_codes" in d else None,
     ),
     AiperBinarySensorDescription(
         key="auto_upgrade",

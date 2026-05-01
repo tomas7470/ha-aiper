@@ -21,6 +21,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from .mqtt import AiperMqttClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,7 +39,9 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{entry.entry_id}",
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
+            # Slower poll once MQTT is up (it carries live state); REST poll
+            # is just a safety net + for things MQTT doesn't expose.
+            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL * 6),
         )
         self.entry = entry
         self.client = AiperClient(
@@ -47,6 +50,7 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             api_base=entry.data.get(CONF_API_BASE),
             token=entry.data.get(CONF_TOKEN),
         )
+        self.mqtt = AiperMqttClient(self.client, on_message=self._on_mqtt_message)
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         try:
@@ -111,3 +115,88 @@ class AiperCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             CONF_API_BASE: result.api_base,
         }
         self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+
+    # ---- MQTT lifecycle + dispatch ----
+    async def async_start_mqtt(self) -> None:
+        """Start the MQTT client and subscribe to every device's topics."""
+        await self.mqtt.start()
+        for sn in self.data:
+            for topic in (
+                f"$aws/things/{sn}/shadow/get/accepted",
+                f"$aws/things/{sn}/shadow/update/accepted",
+                f"$aws/things/{sn}/shadow/update/documents",
+                f"aiper/things/{sn}/+",
+                f"aiper/things/{sn}/+/+",
+                f"aiper/things/{sn}/+/+/+",
+            ):
+                try:
+                    await self.mqtt.subscribe(topic)
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.debug("subscribe %s failed: %s", topic, exc)
+            try:
+                await self.mqtt.request_shadow_get(sn)
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("shadow GET %s failed: %s", sn, exc)
+
+    async def async_stop_mqtt(self) -> None:
+        await self.mqtt.stop()
+
+    async def _on_mqtt_message(self, topic: str, payload: Any) -> None:
+        """Merge a shadow / device-report message into coordinator.data."""
+        if not isinstance(payload, dict):
+            return
+        sn = self._serial_from_topic(topic)
+        if sn is None or sn not in self.data:
+            return
+        record = dict(self.data[sn])
+        # Shadow envelope: state.reported.{NetStat,OpInfo,AlarmReport,...}
+        reported = (
+            payload.get("state", {}).get("reported")
+            if "state" in payload
+            else (
+                payload.get("current", {}).get("state", {}).get("reported")
+                if "current" in payload
+                else payload  # device-direct report on aiper/things/<sn>/...
+            )
+        )
+        if not isinstance(reported, dict):
+            return
+        # Merge the live fields we know about.
+        if "NetStat" in reported and isinstance(reported["NetStat"], dict):
+            ns = reported["NetStat"]
+            record["mqtt_online"] = bool(ns.get("online"))
+            record["mqtt_ble"] = ns.get("ble")
+            record["mqtt_sta"] = ns.get("sta")
+            record["mqtt_cert"] = ns.get("cert")
+            record["mqtt_near_field_bind"] = ns.get("nearFieldBind")
+        if "OpInfo" in reported and isinstance(reported["OpInfo"], dict):
+            op = reported["OpInfo"]
+            if "wifi_name" in op:
+                record["wifiName"] = op["wifi_name"]
+            if "wifi_rssi" in op:
+                record["wifiRssi"] = op["wifi_rssi"]
+        if "AlarmReport" in reported and isinstance(reported["AlarmReport"], dict):
+            ar = reported["AlarmReport"]
+            raw_codes = ar.get("code")
+            codes = list(raw_codes) if isinstance(raw_codes, list) else []
+            record["alarm_codes"] = codes
+            record["alarm_timestamp"] = ar.get("timestamp")
+        # MachineStatus / WorkInfo / WorkMode etc. — preserve raw for debugging
+        # so we can iterate without redeploying.
+        for key in ("MachineStatus", "WorkInfo", "WorkMode", "WaterYield"):
+            if key in reported:
+                record[f"mqtt_{key}"] = reported[key]
+        self.data[sn] = record
+        self.async_set_updated_data(self.data)
+
+    @staticmethod
+    def _serial_from_topic(topic: str) -> str | None:
+        """Extract `<sn>` from `$aws/things/<sn>/...` or `aiper/things/<sn>/...`."""
+        parts = topic.split("/")
+        try:
+            i = parts.index("things")
+        except ValueError:
+            return None
+        if i + 1 < len(parts):
+            return parts[i + 1] or None
+        return None
