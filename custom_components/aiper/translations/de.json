@@ -1,0 +1,61 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "data": {
+                    "email": "E-Mail",
+                    "password": "Passwort",
+                    "region": "Region"
+                },
+                "data_description": {
+                    "email": "E-Mail-Adresse deines Aiper-Kontos",
+                    "password": "Passwort deines Aiper-Kontos",
+                    "region": "Wähle `international` für die EU/US/etc.-Cloud, `chinese` für die cn-north-1-Cloud."
+                }
+            }
+        },
+        "error": {
+            "invalid_auth": "Falsche E-Mail-Adresse oder Passwort.",
+            "cannot_connect": "Aiper-Cloud nicht erreichbar."
+        },
+        "abort": {
+            "already_configured": "Dieses Aiper-Konto ist bereits eingerichtet."
+        }
+    },
+    "entity": {
+        "sensor": {
+            "firmware_version":          {"name": "Firmware-Version"},
+            "mcu_firmware_version":      {"name": "MCU-Firmware"},
+            "valve_firmware_version":    {"name": "Ventil-Firmware"},
+            "bluetooth_firmware_version":{"name": "Bluetooth-Firmware"},
+            "wifi_rssi":                 {"name": "WLAN-Signal"},
+            "wifi_ssid":                 {"name": "WLAN-Netzwerk"},
+            "machine_status":            {"name": "Status"},
+            "alarm_codes":               {"name": "Alarmcodes"}
+        },
+        "binary_sensor": {
+            "online":       {"name": "Online"},
+            "alarm":        {"name": "Alarm"},
+            "auto_upgrade": {"name": "Automatisches Update"}
+        },
+        "button": {
+            "refresh":   {"name": "Aktualisieren"},
+            "run":       {"name": "Bewässerung starten"},
+            "reconnect": {"name": "Neu verbinden"}
+        },
+        "number": {
+            "run_depth":             {"name": "Bewässerungstiefe"},
+            "run_duration_override": {"name": "Bewässerungsdauer (Override)"}
+        },
+        "select": {
+            "region": {"name": "Bereich"}
+        },
+        "camera": {
+            "map": {"name": "Karte"}
+        },
+        "switch": {
+            "watering": {"name": "Bewässerung"},
+            "mqtt_capture": {"name": "MQTT-Debug-Aufzeichnung"}
+        }
+    }
+}
