@@ -185,13 +185,28 @@ class AiperMqttCaptureSwitch(AiperEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs: object) -> None:
         self.coordinator.capture_enabled = True
+        # Pause REST polling so HA's JWT doesn't keep itself alive — that
+        # frees the user to log in to the Aiper app on their phone without
+        # the app's login invalidating HA's JWT (and triggering a re-login
+        # that kicks the app off). MQTT runs on AWS Cognito temp creds
+        # cached locally and survives independently for ~1h.
+        self.coordinator.update_interval = None
         _LOGGER.info(
-            "Aiper MQTT capture ENABLED → %s",
+            "Aiper MQTT capture ENABLED — REST polling paused. "
+            "Capture file: %s. Open the Aiper app and exercise Quick Run "
+            "/ Stop / etc. to record what the app actually publishes.",
             self.coordinator._capture_path,  # noqa: SLF001
         )
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: object) -> None:
+        from datetime import timedelta  # noqa: PLC0415
+        from .const import DEFAULT_SCAN_INTERVAL  # noqa: PLC0415
+
         self.coordinator.capture_enabled = False
-        _LOGGER.info("Aiper MQTT capture DISABLED")
+        # Resume REST polling at the same slow rate the coordinator uses
+        # while MQTT is up.
+        self.coordinator.update_interval = timedelta(seconds=DEFAULT_SCAN_INTERVAL * 6)
+        await self.coordinator.async_request_refresh()
+        _LOGGER.info("Aiper MQTT capture DISABLED — REST polling resumed")
         self.async_write_ha_state()
