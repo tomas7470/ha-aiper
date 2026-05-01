@@ -67,17 +67,64 @@ async def async_trigger_run(
     duration: int = 0,
     region_id: int = 0,
 ) -> None:
-    """Shared implementation: schedule a one-shot watering task ~10s from now.
+    """Trigger a one-shot watering run.
 
-    Used by both the `aiper.run_now` service and the per-device button entity.
-    Caller must ensure exactly one of `depth`/`duration` is positive.
+    Tries the MQTT shadow-desired path first (matches the app's "Quick run"
+    button); falls back to the REST scheduled-task hack only if MQTT isn't
+    connected. Caller must ensure exactly one of `depth`/`duration` > 0.
     """
     if depth <= 0 and duration <= 0:
         raise vol.Invalid("Set either depth (mm) > 0 or duration (min) > 0")
     use_depth = depth > 0
 
-    # IrriSense 2.0 is map-based; we need (mapId, regionId) from the device.
-    # WR is single-zone, both 0 is fine.
+    # Auto-pick first map region when the user left region_id=0 and there's a map.
+    if region_id == 0:
+        try:
+            regions = await coordinator.client.get_map_regions(serial)
+            if regions:
+                first = regions[0]
+                region_id = int(first.get("id") or 0)
+                _LOGGER.info(
+                    "run_now: auto-picked region %r (id=%s) for %s",
+                    first.get("name"), region_id, serial,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("region auto-pick failed for %s: %s", serial, exc)
+
+    # Path 1 (preferred): MQTT shadow-desired. The IrriSense 2.0 firmware
+    # listens for a `Watering` desired-state block. Field names mirror what
+    # the app's CmdManager sends (smali: editIrrisenseTaskTDevice — keys are
+    # snake_case `water_depth`, `point_time`, `start_time`, `weekdays`,
+    # `repeat_type`). We send a one-shot (repeat_type=0) starting now+10s.
+    if coordinator.mqtt.is_connected:
+        start_ts = int(time.time()) + 10
+        start_local = time.localtime(start_ts)
+        hh_mm = f"{start_local.tm_hour:02d}:{start_local.tm_min:02d}"
+        desired: dict[str, Any] = {
+            "Watering": {
+                "command": "start",
+                "regionId": region_id,
+                "start_time": hh_mm,
+                "weekdays": "",
+                "repeat_type": 0,
+                "trigger_ts": start_ts,
+            }
+        }
+        if use_depth:
+            desired["Watering"]["water_depth"] = depth
+            desired["Watering"]["point_time"] = 0
+        else:
+            desired["Watering"]["point_time"] = duration
+            desired["Watering"]["water_depth"] = 0.0
+        _LOGGER.info("run_now via MQTT shadow: sn=%s %s", serial, desired)
+        await coordinator.mqtt.publish_shadow_desired(serial, desired)
+        # Coordinator will pick up the device's response on the shadow
+        # update/accepted topic; nothing else to do.
+        return
+
+    # Path 2 (fallback): REST scheduled task. This is the only path the
+    # cloud allows when MQTT isn't up; it works ONLY if the device is in a
+    # healthy state (otherwise 6002).
     map_id = 0
     try:
         maps: Any = await coordinator.client.get_map_list(serial)
@@ -86,33 +133,14 @@ async def async_trigger_run(
     except AiperError as exc:
         _LOGGER.debug("get_map_list failed for %s: %s", serial, exc)
 
-    # When user left region_id=0 and the device has a map, auto-pick the
-    # first region — region_id=0 is not a real id and the server rejects it.
-    if region_id == 0 and map_id != 0:
-        try:
-            regions = await coordinator.client.get_map_regions(serial)
-            if regions:
-                first = regions[0]
-                region_id = int(first.get("id") or 0)
-                _LOGGER.info(
-                    "aiper.run_now: auto-picked region %r (id=%s) for %s",
-                    first.get("name"), region_id, serial,
-                )
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("region auto-pick failed for %s: %s", serial, exc)
-
     start_ts = int(time.time()) + 10
-    # `startTime` should be the HH:mm of the firstExecute timestamp. The
-    # server may validate it for one-shot tasks even though scheduling is by
-    # absolute timestamp — the smali shows it's a non-null required field.
     start_local = time.localtime(start_ts)
     start_time_str = f"{start_local.tm_hour:02d}:{start_local.tm_min:02d}"
-
     _LOGGER.info(
-        "aiper.run_now: sn=%s %s map_id=%s region_id=%s start_ts=%s start_time=%s",
+        "run_now via REST (MQTT not connected): sn=%s %s map_id=%s region_id=%s",
         serial,
         f"depth={depth}mm" if use_depth else f"duration={duration}min",
-        map_id, region_id, start_ts, start_time_str,
+        map_id, region_id,
     )
     await coordinator.client.add_watering_task(
         serial,
