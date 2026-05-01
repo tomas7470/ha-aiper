@@ -142,14 +142,17 @@ class AiperWateringSwitch(AiperEntity, SwitchEntity):
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: object) -> None:
-        """Stop = `WrControl{cmd: 0}` shadow desired (smali:
-        ManualOperateViewModel.resetControl)."""
+        """Stop = `setWorkMode{status:0}` shadow desired (smali:
+        WrPanelWorkInfoViewModel.stopWork$1)."""
         mqtt = self.coordinator.mqtt
         if mqtt is None or not mqtt.is_connected:
             raise RuntimeError("Stop requires MQTT shadow (cloud_push); MQTT not connected")
+        # The firmware's stopWork passes the current mode + status=0. We
+        # don't know the current `mode` for sure (water vs pesticide), but
+        # mode=0 (water) is the overwhelmingly common case.
         await mqtt.publish_shadow_desired(
             self._serial,
-            {"WrControl": {"cmd": 0}},
+            {"setWorkMode": {"mode": 0, "status": 0}},
         )
         self._optimistic_state = False
         self.async_write_ha_state()
